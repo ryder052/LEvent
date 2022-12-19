@@ -5,18 +5,11 @@
 #include <vector>
 #include <any>
 #include <ranges>
+#include <memory>
 #include "Singleton.h"
 
 namespace levent
 {
-    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Interface for cleaner Connection
-    class ILEvent
-    {
-    public:
-        virtual void RemoveListener(class Connection&) = 0;
-    };
-
     enum class EError
     {
         OK,
@@ -28,6 +21,13 @@ namespace levent
     };
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Interface for cleaner Connection
+    class ILEvent
+    {
+    public:
+        virtual void RemoveListener(class Connection&) = 0;
+    };
+
     // Use this to unbind from an event.
     class [[nodiscard]] Connection
     {
@@ -133,7 +133,7 @@ namespace levent
         LEvent() = default;
 
         // Registers new delegate: Object + member function ptr
-        template<typename ObjectType, typename MemberFuncPtrType>
+        template<typename ObjectType, typename MemberFuncPtrType, typename = std::enable_if_t<!std::is_convertible_v<MemberFuncPtrType, int>>>
         std::shared_ptr<DelegateType> AddListener(ObjectType* Object, MemberFuncPtrType FuncPtr, int Priority = 0, bool AllowDuplicates = false)
         {
             if (bIsBroadcasting)
@@ -174,6 +174,22 @@ namespace levent
                 Delegates.erase(FoundIt);
         }
 
+        EError RemoveListener(std::shared_ptr<DelegateType> DelegatePtr)
+        {
+            if (bIsBroadcasting)
+                return EError::ModifyingCallbackListDuringBroadcast;
+
+            auto FoundIt = std::ranges::find_if(Delegates, [&DelegatePtr](const auto& Data)
+                {
+                    return Data == DelegatePtr;
+                });
+
+            if (FoundIt != Delegates.end())
+                Delegates.erase(FoundIt);
+
+            return EError::OK;
+        }
+
         // Calls all delegates.
         // While broadcasting, disable adding/removing listeners.
         auto Trigger(Args... InArgs) const
@@ -193,6 +209,31 @@ namespace levent
                 Results.reserve(Delegates.size());
                 for (auto&& D : Delegates)
                     Results.push_back((*D)(InArgs...));
+
+                bIsBroadcasting = false;
+                return Results;
+            }
+        }
+
+        // Calls all delegates, custom return container
+        // While broadcasting, disable adding/removing listeners.
+        template<typename ContainerType, typename AdderFunc>
+        auto TriggerComplex(AdderFunc Adder, Args... InArgs) const
+        {
+            bIsBroadcasting = true;
+
+            if constexpr (std::is_same_v<ReturnType, void>)
+            {
+                for (auto&& D : Delegates)
+                    (*D)(InArgs...);
+
+                bIsBroadcasting = false;
+            }
+            else
+            {
+                ContainerType Results;
+                for (auto&& D : Delegates)
+                    Adder(Results, (*D)(InArgs...));
 
                 bIsBroadcasting = false;
                 return Results;
@@ -228,6 +269,8 @@ namespace levent
 
         std::vector<std::shared_ptr<DelegateType>> Delegates;
         mutable bool bIsBroadcasting = false;;
+
+        friend class levent::Connection;
     };
 }
 
